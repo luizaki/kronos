@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, useMemo } from 'react';
 import TimezoneSelect from './TimezoneSelect';
 import AccountSettings from './AccountSettings';
 import { useTimezone } from '../contexts/TimezoneContext';
@@ -17,9 +17,10 @@ import {
 import {
   Globe, Calendar, Clock, RotateCcw, Trash2, Settings as SettingsIcon,
   AlertTriangle, Download, RefreshCcw, X, BarChart2, Plus, Building2,
-  Github, Star, Eye, Sun, Moon, Monitor,
+  Github, Star, Eye, Sun, Moon, Monitor, Search, SearchX,
 } from 'lucide-react';
 import { CHANGELOG } from '../data/changelog';
+import { SETTINGS_SECTIONS, matchSettingsSections } from '../utils/settingsSearch';
 
 const formatBytes = (n) => {
   if (n < 1024) return `${n} B`;
@@ -242,6 +243,47 @@ const Settings = ({ onCorruptionResolved, onPreviewOnboarding }) => {
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // ── Search ────────────────────────────────────────────────────────────────
+  const [query, setQuery] = useState('');
+  const searchInputRef = useRef(null);
+  const isSearching = query.trim().length > 0;
+  const matchedIds = useMemo(() => matchSettingsSections(query), [query]);
+
+  // Data Recovery only exists when something was quarantined, so it shouldn't
+  // count towards "n of m" or keep the empty state away when nothing matches.
+  const searchableSections = SETTINGS_SECTIONS.filter(
+    s => s.id !== 'recovery' || backups.length > 0
+  );
+  const matchCount = searchableSections.filter(s => matchedIds.has(s.id)).length;
+
+  // The Save card is the only way to commit the pending edits from the page, so
+  // an active search never hides it while there are unsaved changes.
+  const show = (id) => matchedIds.has(id) || (id === 'save' && hasUnsaved);
+
+  // `/` jumps to the search box, the way it does in most web apps. Ignored
+  // while typing so it never eats a literal slash (e.g. a date format).
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key !== '/' || e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = document.activeElement;
+      const tag = el?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el?.isContentEditable) return;
+      e.preventDefault();
+      searchInputRef.current?.focus();
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, []);
+
+  const handleSearchKeyDown = (e) => {
+    if (e.key !== 'Escape') return;
+    if (query) {
+      setQuery('');
+    } else {
+      searchInputRef.current?.blur();
+    }
+  };
+
   return (
     <div className="p-6 max-w-4xl mx-auto">
     <div>
@@ -251,12 +293,80 @@ const Settings = ({ onCorruptionResolved, onPreviewOnboarding }) => {
         <p className="mt-1.5 text-sm text-gray-500">Tune how Kronos tracks, displays, and organizes your time.</p>
       </div>
 
+      {/* Search — filters the cards below to the ones matching the query.
+          Sticky so it stays reachable once you've scrolled deep into the page.
+          -mx-6/px-6 bleeds the background across the page gutters so cards
+          scroll out of sight behind it. gray-50 to match AppLayout's shell —
+          slate-50 is a near-identical light gray but a much darker navy once
+          the dark palette remap kicks in, which showed as a band. */}
+      <div className="sticky top-0 z-20 -mx-6 mb-5 bg-gray-50/90 px-6 py-4 backdrop-blur-sm">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-gray-400" />
+          <input
+            ref={searchInputRef}
+            type="text"
+            role="searchbox"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={handleSearchKeyDown}
+            placeholder="Search settings — timezone, dark mode, week start…"
+            aria-label="Search settings"
+            className="w-full rounded-xl border border-gray-200 bg-white py-2.5 pl-10 pr-24 text-sm text-gray-900 placeholder:text-gray-400 shadow-xs focus:border-blue-400 focus:outline-none focus:ring-2 focus:ring-blue-500/20"
+          />
+          <div className="absolute right-2.5 top-1/2 flex -translate-y-1/2 items-center gap-1.5">
+            {isSearching ? (
+              <>
+                <span className="text-xs tabular-nums text-gray-400">
+                  {matchCount}/{searchableSections.length}
+                </span>
+                <button
+                  type="button"
+                  onClick={() => { setQuery(''); searchInputRef.current?.focus(); }}
+                  aria-label="Clear search"
+                  className="grid h-6 w-6 place-items-center rounded-lg text-gray-400 transition-colors duration-150 hover:bg-gray-100 hover:text-gray-600"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              </>
+            ) : (
+              <kbd className="hidden rounded-md border border-gray-200 bg-gray-100 px-1.5 py-0.5 font-sans text-[11px] font-medium text-gray-400 sm:block">
+                /
+              </kbd>
+            )}
+          </div>
+        </div>
+        <p role="status" aria-live="polite" className="sr-only">
+          {isSearching ? `${matchCount} of ${searchableSections.length} settings sections match ${query}` : ''}
+        </p>
+      </div>
+
       <div className="space-y-5">
+        {/* No matches — offer the way back rather than a bare dead end. */}
+        {isSearching && matchCount === 0 && (
+          <div className="rounded-2xl border border-dashed border-gray-300 bg-white/60 px-6 py-12 text-center">
+            <div className="mx-auto grid h-11 w-11 place-items-center rounded-xl bg-gray-100 text-gray-400">
+              <SearchX className="h-5 w-5" />
+            </div>
+            <p className="mt-3.5 text-sm font-semibold text-gray-900">No settings match “{query.trim()}”</p>
+            <p className="mt-1 text-[13px] text-gray-500">
+              Try a shorter phrase, or browse everything from the top.
+            </p>
+            <button
+              type="button"
+              onClick={() => { setQuery(''); searchInputRef.current?.focus(); }}
+              className="mt-4 inline-flex items-center gap-1.5 rounded-lg border border-gray-200 bg-white px-3 py-1.5 text-sm font-medium text-gray-700 shadow-xs transition-colors duration-150 hover:bg-gray-50 hover:text-gray-900"
+            >
+              <X className="h-4 w-4" />
+              Clear search
+            </button>
+          </div>
+        )}
+
         {/* Account & Sync — optional cloud accounts and cross-device sync. */}
-        <AccountSettings />
+        {show('account') && <AccountSettings />}
 
         {/* Data Recovery — only rendered when there are quarantined backups. */}
-        {backups.length > 0 && (
+        {backups.length > 0 && show('recovery') && (
           <div className="border border-amber-200/80 rounded-2xl p-6 bg-amber-50/80">
             <div className="flex items-center gap-3 mb-3">
               <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-amber-100/80 text-amber-600">
@@ -320,6 +430,7 @@ const Settings = ({ onCorruptionResolved, onPreviewOnboarding }) => {
         )}
 
         {/* Timezone Settings */}
+        {show('timezone') && (
         <div className="bg-white border border-gray-200/80 rounded-2xl shadow-xs p-6">
           <div className="flex items-center gap-3 mb-5">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-blue-50 text-blue-600">
@@ -347,7 +458,10 @@ const Settings = ({ onCorruptionResolved, onPreviewOnboarding }) => {
           </div>
         </div>
 
+        )}
+
         {/* Clock Format Settings */}
+        {show('clock') && (
         <div className="bg-white border border-gray-200/80 rounded-2xl shadow-xs p-6">
           <div className="flex items-center gap-3 mb-5">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-indigo-50 text-indigo-600">
@@ -399,7 +513,10 @@ const Settings = ({ onCorruptionResolved, onPreviewOnboarding }) => {
           </div>
         </div>
 
+        )}
+
         {/* Work Schedule — week start, non-work days, and daily hour goal */}
+        {show('schedule') && (
         <div className="bg-white border border-gray-200/80 rounded-2xl shadow-xs p-6">
           <div className="flex items-center gap-3 mb-5">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-emerald-50 text-emerald-600">
@@ -477,7 +594,10 @@ const Settings = ({ onCorruptionResolved, onPreviewOnboarding }) => {
           </div>
         </div>
 
+        )}
+
         {/* Heatmap Colors */}
+        {show('heatmap') && (
         <div className="bg-white border border-gray-200/80 rounded-2xl shadow-xs p-6">
           <div className="flex items-center gap-3 mb-5">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-violet-50 text-violet-600">
@@ -641,7 +761,10 @@ const Settings = ({ onCorruptionResolved, onPreviewOnboarding }) => {
           </div>
         </div>
 
+        )}
+
         {/* Goal Ring Colors */}
+        {show('goalring') && (
         <div className="bg-white border border-gray-200/80 rounded-2xl shadow-xs p-6">
           <div className="flex items-center gap-3 mb-5">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-rose-50 text-rose-600">
@@ -729,7 +852,10 @@ const Settings = ({ onCorruptionResolved, onPreviewOnboarding }) => {
           </div>
         </div>
 
+        )}
+
         {/* Save Settings Button */}
+        {show('save') && (
         <div className="border border-blue-200/80 rounded-2xl p-5 bg-blue-50/60">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-3">
@@ -751,10 +877,13 @@ const Settings = ({ onCorruptionResolved, onPreviewOnboarding }) => {
           </div>
         </div>
 
-        {/* Reset Options */}
+        )}
 
-
+        {/* Reset Options — the wrapper only exists for the inner spacing, so it
+            goes away too when a search hides both cards. */}
+        {(show('reset-onboarding') || show('clear-data')) && (
           <div className="space-y-4">
+            {show('reset-onboarding') && (
             <div className="flex items-center justify-between p-5 bg-amber-50/80 border border-amber-200/80 rounded-2xl">
               <div className="flex items-center gap-3">
                 <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-amber-100/80 text-amber-600">
@@ -787,7 +916,9 @@ const Settings = ({ onCorruptionResolved, onPreviewOnboarding }) => {
                 </button>
               </div>
             </div>
+            )}
 
+            {show('clear-data') && (
             <div className="flex items-center justify-between p-5 bg-red-50/80 border border-red-200/80 rounded-2xl">
               <div className="flex items-center gap-3">
                 <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-red-100/80 text-red-600">
@@ -807,9 +938,12 @@ const Settings = ({ onCorruptionResolved, onPreviewOnboarding }) => {
                 <span>{isResetting ? 'Clearing...' : 'Clear All'}</span>
               </button>
             </div>
+            )}
           </div>
+        )}
 
         {/* Appearance */}
+        {show('appearance') && (
         <div className="bg-white border border-gray-200/80 rounded-2xl shadow-xs p-6">
           <div className="flex items-center gap-3 mb-5">
             <div className="grid h-9 w-9 shrink-0 place-items-center rounded-xl bg-indigo-50 text-indigo-600">
@@ -847,7 +981,10 @@ const Settings = ({ onCorruptionResolved, onPreviewOnboarding }) => {
           </div>
         </div>
 
+        )}
+
         {/* About */}
+        {show('about') && (
         <div className="bg-white border border-gray-200/80 rounded-2xl shadow-xs p-6">
           <div className="flex flex-wrap items-center justify-between gap-4">
             <div className="flex items-center gap-3">
@@ -885,6 +1022,7 @@ const Settings = ({ onCorruptionResolved, onPreviewOnboarding }) => {
             </a>
           </div>
         </div>
+        )}
 
       </div>
     </div>

@@ -23,6 +23,14 @@ export const CHANGE_TYPES = {
 // Newest first.
 export const CHANGELOG = [
   {
+    version: '0.8.3',
+    date: '2026-07-29',
+    title: 'Search your settings',
+    changes: [
+      { type: 'added', description: 'Settings now has a search box that pins itself to the top of the page as you scroll. Type what you\'re after — "dark mode", "am/pm", "week start", "wipe" — and everything that doesn\'t match folds away, so you no longer have to scroll the whole page hunting for one control. It matches on plain-language synonyms, not just the exact heading, and a counter next to the box shows how many sections are left. Press / from anywhere on the page to jump straight into it, Esc to clear.' },
+    ],
+  },
+  {
     version: '0.8.2',
     date: '2026-07-24',
     title: 'Set your theme during setup',
