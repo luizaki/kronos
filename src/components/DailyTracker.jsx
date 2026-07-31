@@ -1129,7 +1129,112 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
   // (which also runs from onBlur) to skip writing for that one trigger.
   const skipNextBlurCommitRef = useRef(false);
 
-  const startInlineEdit = (entry, field) => {
+  // Remembers what the last auto-grow measurement was taken for, so the
+  // measurement can be skipped when nothing that affects the height changed.
+  const inlineAutoGrowRef = useRef({ el: null, value: null, width: 0 });
+
+  // Nearest ancestor that actually scrolls. Walked rather than hardcoded so
+  // this doesn't depend on which shell the tracker is mounted in.
+  const getScrollParent = (el) => {
+    for (let node = el.parentElement; node; node = node.parentElement) {
+      const { overflowY } = window.getComputedStyle(node);
+      if ((overflowY === 'auto' || overflowY === 'scroll') && node.scrollHeight > node.clientHeight) {
+        return node;
+      }
+    }
+    return null;
+  };
+
+  // Run `mutate`, then put the scroll container back where it was.
+  //
+  // Shrinking a textarea shortens the list, which lowers the container's
+  // maximum scroll offset, and the browser clamps the current offset to fit.
+  // Growing it back afterwards does not undo the clamp, so the view has
+  // silently crept upward. This captures the offset and reapplies it.
+  //
+  // Reading scrollHeight between the two is load-bearing: it forces a layout
+  // flush, so the assignment clamps against the restored height instead of the
+  // collapsed one. Without it the restore is itself silently clamped away.
+  const preservingScroll = (el, mutate) => {
+    const scroller = getScrollParent(el);
+    if (!scroller) {
+      mutate();
+      return;
+    }
+
+    const savedScrollTop = scroller.scrollTop;
+    mutate();
+    void scroller.scrollHeight;
+    if (scroller.scrollTop !== savedScrollTop) {
+      scroller.scrollTop = savedScrollTop;
+    }
+  };
+
+  // Focus an inline editor and reveal it, but deliberately rather than letting
+  // the browser decide. React's `autoFocus` uses a plain focus(), whose reveal
+  // alignment is up to the user agent; opting out with preventScroll and then
+  // asking for the reveal explicitly keeps it predictable.
+  //
+  // 'nearest' on both axes is the important part: it scrolls the minimum needed
+  // to bring the editor into view when it is clipped by the container edge, and
+  // does nothing at all when the editor is already fully visible. So clicking a
+  // half-cut-off entry still brings it into view, while clicking one in plain
+  // sight leaves the list exactly where it was.
+  //
+  // The activeElement guard is what makes this safe to call from an inline ref
+  // callback: those re-run on every render (fresh function identity), so an
+  // unguarded focus() would re-fire onFocus — and therefore re-select the whole
+  // value — on every keystroke. Once the editor holds focus, this is a no-op.
+  const focusInlineEditor = (el) => {
+    if (el && document.activeElement !== el) {
+      el.focus({ preventScroll: true });
+      el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    }
+  };
+
+  // Auto-grow a textarea to fit its content.
+  //
+  // Measuring requires collapsing the height to 'auto' first, which is
+  // destructive: for the moment before the real height goes back on, the
+  // element is short, the scroll container's content shrinks, and the browser
+  // both clamps the scroll offset and re-reveals the caret of a focused
+  // textarea. So this does two things to stay invisible:
+  //
+  //   1. Skips the measurement entirely unless the value or the available
+  //      width changed. The tracker re-renders every second (the clock
+  //      intervals) and inline ref callbacks re-run on every render, so
+  //      measuring unconditionally meant one collapse per second for as long
+  //      as the editor was open — the list crawled upward and resisted
+  //      scrolling while you were trying to edit.
+  //   2. Holds the scroll offset across the write it does perform.
+  //   3. Trusts a height that was already seeded from the label (see below), so
+  //      opening an editor performs no measurement at all.
+  const autoGrowInlineEditor = (el) => {
+    if (!el) return;
+
+    const prev = inlineAutoGrowRef.current;
+    const width = el.clientWidth;
+    // `el` is compared by identity: it survives re-renders, so a difference
+    // here means a freshly mounted editor that has never been measured.
+    const freshMount = prev.el !== el;
+    if (!freshMount && prev.value === el.value && prev.width === width) return;
+    inlineAutoGrowRef.current = { el, value: el.value, width };
+
+    // A freshly mounted editor whose height came from the label it replaced is
+    // already correct. Measuring it anyway would collapse it to one row for an
+    // instant — the very thing the seeded height exists to prevent.
+    if (freshMount && el.style.height) return;
+
+    preservingScroll(el, () => {
+      el.style.height = 'auto';
+      el.style.height = `${el.scrollHeight}px`;
+    });
+  };
+
+  // `labelEl` is the element being replaced by the editor (the h3 for a task
+  // name). Its height is carried into state so the editor can mount at exactly
+  // that height — see the `style` prop on the name textareas for why.
+  const startInlineEdit = (entry, field, labelEl) => {
     if (!entry || !field) return;
     // Disarm any leftover Esc skip-flag: browsers don't fire blur when the
     // focused textarea unmounts, so an Esc-cancel can leave the flag armed
@@ -1147,7 +1252,12 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
     } else if (field === 'endTime') {
       initialValue = formatInTimezone(parseISO(entry.endTime), 'HH:mm:ss');
     }
-    setInlineEdit({ entryId: entry.id, field, value: initialValue });
+    setInlineEdit({
+      entryId: entry.id,
+      field,
+      value: initialValue,
+      labelHeight: field === 'description' ? labelEl?.offsetHeight || null : null,
+    });
   };
 
   const updateInlineValue = (value) => {
@@ -1905,7 +2015,6 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
                                   here — see the guard in startInlineEdit. */}
                               {inlineEdit?.entryId === item.data.id && inlineEdit.field === 'description' ? (
                                 <textarea
-                                  autoFocus
                                   rows={1}
                                   value={inlineEdit.value}
                                   onChange={(e) => updateInlineValue(e.target.value)}
@@ -1916,18 +2025,19 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
                                   }}
                                   onFocus={(e) => e.target.select()}
                                   aria-label="Edit task name"
+                                  // Mount at the height of the h3 being replaced. See the
+                                  // matching comment on the completed-entry editor below.
+                                  style={inlineEdit.labelHeight ? { height: `${inlineEdit.labelHeight}px` } : undefined}
                                   ref={(el) => {
-                                    if (el) {
-                                      el.style.height = 'auto';
-                                      el.style.height = `${el.scrollHeight}px`;
-                                    }
+                                    autoGrowInlineEditor(el);
+                                    focusInlineEditor(el);
                                   }}
                                   className="font-semibold text-gray-900 text-lg tracking-tight bg-white/70 rounded outline-none ring-2 ring-green-400/60 resize-none leading-normal p-0 m-0 border-0 box-border block w-full align-top whitespace-pre-wrap wrap-break-word overflow-hidden"
                                 />
                               ) : (
                                 <h3
                                   className="font-semibold text-gray-900 text-lg tracking-tight cursor-text rounded hover:ring-1 hover:ring-green-300/80 hover:bg-white/50 inline-block text-wrap whitespace-pre-wrap wrap-break-word leading-normal p-0 m-0 border-0 box-border align-top transition-colors duration-150"
-                                  onClick={() => startInlineEdit(item.data, 'description')}
+                                  onClick={(e) => startInlineEdit(item.data, 'description', e.currentTarget)}
                                   title="Click to edit"
                                 >
                                   {item.data.description}
@@ -2021,7 +2131,6 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
                           <div className="flex-1 min-w-0">
                             {inlineEdit?.entryId === entry.id && inlineEdit.field === 'description' ? (
                               <textarea
-                                autoFocus
                                 rows={1}
                                 value={inlineEdit.value}
                                 onChange={(e) => updateInlineValue(e.target.value)}
@@ -2032,14 +2141,21 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
                                 }}
                                 onFocus={(e) => e.target.select()}
                                 aria-label="Edit task name"
-                                // Auto-grow to fit content. Runs on every render (the
-                                // inline arrow makes a fresh callback), so the height
-                                // tracks the value as the user types.
+                                // Mount at exactly the height of the h3 this replaces.
+                                // rows={1} would otherwise make the card one row tall for
+                                // the instant before the ref callback sizes it, and that
+                                // shortens the list: at the bottom of a day the browser
+                                // clamps the scroll offset to the briefly-smaller
+                                // maximum, and growing back does not undo the clamp. The
+                                // result was the last entry lurching upward by a line per
+                                // wrapped line the moment you clicked it.
+                                style={inlineEdit.labelHeight ? { height: `${inlineEdit.labelHeight}px` } : undefined}
+                                // Re-runs on every render (the inline arrow makes a
+                                // fresh callback). Both helpers self-guard so only a
+                                // real change to the value does any work.
                                 ref={(el) => {
-                                  if (el) {
-                                    el.style.height = 'auto';
-                                    el.style.height = `${el.scrollHeight}px`;
-                                  }
+                                  autoGrowInlineEditor(el);
+                                  focusInlineEditor(el);
                                 }}
                                 // Full container width instead of cloning the label's
                                 // measured size: the h3 wraps against this same width,
@@ -2056,7 +2172,7 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
                                 // the container requires, so the title would rewrap the
                                 // moment it swaps to the textarea (which can't balance).
                                 className="font-semibold text-gray-900 cursor-text rounded hover:ring-1 hover:ring-gray-200 hover:bg-gray-50/80 inline-block text-wrap whitespace-pre-wrap wrap-break-word leading-normal tracking-normal p-0 m-0 border-0 box-border align-top transition-colors duration-150"
-                                onClick={() => startInlineEdit(entry, 'description')}
+                                onClick={(e) => startInlineEdit(entry, 'description', e.currentTarget)}
                                 title="Click to edit"
                               >
                                 {entry.description}
@@ -2071,7 +2187,7 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
                                   <input
                                     type="time"
                                     step="1"
-                                    autoFocus
+                                    ref={focusInlineEditor}
                                     value={inlineEdit.value}
                                     onChange={(e) => updateInlineValue(e.target.value)}
                                     onBlur={commitInlineEdit}
@@ -2097,7 +2213,7 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
                                   <input
                                     type="time"
                                     step="1"
-                                    autoFocus
+                                    ref={focusInlineEditor}
                                     value={inlineEdit.value}
                                     onChange={(e) => updateInlineValue(e.target.value)}
                                     onBlur={commitInlineEdit}

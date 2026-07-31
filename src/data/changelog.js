@@ -23,6 +23,15 @@ export const CHANGE_TYPES = {
 // Newest first.
 export const CHANGELOG = [
   {
+    version: '0.8.4',
+    date: '2026-07-31',
+    title: 'Editing an entry stays put',
+    changes: [
+      { type: 'fixed', description: 'Clicking the name of the last entry in a day no longer lurches the list upward. When a task name wrapped onto several lines, the editor opened one line tall for a moment before sizing itself, which briefly shortened the page — and at the bottom of a day the browser then clamped the scroll position and never gave it back. The jump cost one line for every line the name wrapped to, so the longest names lurched the furthest. The editor now opens at exactly the height of the name it replaces.' },
+      { type: 'fixed', description: 'While an inline editor was open the page also fought you: the list crept upward once a second and the scroll wheel barely worked, because the editor was re-measuring its own height on every clock tick. Editing a task name now leaves the scroll position alone for as long as the editor stays open.' },
+    ],
+  },
+  {
     version: '0.8.3',
     date: '2026-07-29',
     title: 'Search your settings',
