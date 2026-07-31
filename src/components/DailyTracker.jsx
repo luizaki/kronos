@@ -1129,12 +1129,11 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
   // (which also runs from onBlur) to skip writing for that one trigger.
   const skipNextBlurCommitRef = useRef(false);
 
-  // Remembers what the last auto-grow measurement was taken for, so the
-  // measurement can be skipped when nothing that affects the height changed.
+  // What the last auto-grow measurement was taken for; lets us skip re-measuring.
   const inlineAutoGrowRef = useRef({ el: null, value: null, width: 0 });
 
-  // Nearest ancestor that actually scrolls. Walked rather than hardcoded so
-  // this doesn't depend on which shell the tracker is mounted in.
+  // Nearest scrolling ancestor. Walked, not hardcoded, so this survives
+  // being mounted in a different shell.
   const getScrollParent = (el) => {
     for (let node = el.parentElement; node; node = node.parentElement) {
       const { overflowY } = window.getComputedStyle(node);
@@ -1145,16 +1144,9 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
     return null;
   };
 
-  // Run `mutate`, then put the scroll container back where it was.
-  //
-  // Shrinking a textarea shortens the list, which lowers the container's
-  // maximum scroll offset, and the browser clamps the current offset to fit.
-  // Growing it back afterwards does not undo the clamp, so the view has
-  // silently crept upward. This captures the offset and reapplies it.
-  //
-  // Reading scrollHeight between the two is load-bearing: it forces a layout
-  // flush, so the assignment clamps against the restored height instead of the
-  // collapsed one. Without it the restore is itself silently clamped away.
+  // Runs mutate() and puts the scroll offset back. Shrinking a textarea
+  // shortens the list; the browser clamps the offset to the smaller maximum
+  // and growing back doesn't undo it.
   const preservingScroll = (el, mutate) => {
     const scroller = getScrollParent(el);
     if (!scroller) {
@@ -1164,27 +1156,16 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
 
     const savedScrollTop = scroller.scrollTop;
     mutate();
-    void scroller.scrollHeight;
+    void scroller.scrollHeight; // force reflow, else the restore below is clamped away
     if (scroller.scrollTop !== savedScrollTop) {
       scroller.scrollTop = savedScrollTop;
     }
   };
 
-  // Focus an inline editor and reveal it, but deliberately rather than letting
-  // the browser decide. React's `autoFocus` uses a plain focus(), whose reveal
-  // alignment is up to the user agent; opting out with preventScroll and then
-  // asking for the reveal explicitly keeps it predictable.
-  //
-  // 'nearest' on both axes is the important part: it scrolls the minimum needed
-  // to bring the editor into view when it is clipped by the container edge, and
-  // does nothing at all when the editor is already fully visible. So clicking a
-  // half-cut-off entry still brings it into view, while clicking one in plain
-  // sight leaves the list exactly where it was.
-  //
-  // The activeElement guard is what makes this safe to call from an inline ref
-  // callback: those re-run on every render (fresh function identity), so an
-  // unguarded focus() would re-fire onFocus — and therefore re-select the whole
-  // value — on every keystroke. Once the editor holds focus, this is a no-op.
+  // Focus, then reveal by hand: 'nearest' moves the minimum needed and does
+  // nothing when already visible, unlike the UA's own focus scroll.
+  // The activeElement test matters; ref callbacks re-run every render, and a
+  // second focus() would re-fire onFocus and re-select on every keystroke.
   const focusInlineEditor = (el) => {
     if (el && document.activeElement !== el) {
       el.focus({ preventScroll: true });
@@ -1192,37 +1173,21 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
     }
   };
 
-  // Auto-grow a textarea to fit its content.
-  //
-  // Measuring requires collapsing the height to 'auto' first, which is
-  // destructive: for the moment before the real height goes back on, the
-  // element is short, the scroll container's content shrinks, and the browser
-  // both clamps the scroll offset and re-reveals the caret of a focused
-  // textarea. So this does two things to stay invisible:
-  //
-  //   1. Skips the measurement entirely unless the value or the available
-  //      width changed. The tracker re-renders every second (the clock
-  //      intervals) and inline ref callbacks re-run on every render, so
-  //      measuring unconditionally meant one collapse per second for as long
-  //      as the editor was open — the list crawled upward and resisted
-  //      scrolling while you were trying to edit.
-  //   2. Holds the scroll offset across the write it does perform.
-  //   3. Trusts a height that was already seeded from the label (see below), so
-  //      opening an editor performs no measurement at all.
+  // Grows a textarea to fit. Measuring means collapsing to 'auto' first, which
+  // briefly shortens the list, so only measure when the height can have
+  // changed: the clock re-renders us every second and ref callbacks re-run
+  // each time, and measuring on all of them walked the list upward.
   const autoGrowInlineEditor = (el) => {
     if (!el) return;
 
     const prev = inlineAutoGrowRef.current;
     const width = el.clientWidth;
-    // `el` is compared by identity: it survives re-renders, so a difference
-    // here means a freshly mounted editor that has never been measured.
+    // el survives re-renders, so a new one means a fresh, unmeasured editor.
     const freshMount = prev.el !== el;
     if (!freshMount && prev.value === el.value && prev.width === width) return;
     inlineAutoGrowRef.current = { el, value: el.value, width };
 
-    // A freshly mounted editor whose height came from the label it replaced is
-    // already correct. Measuring it anyway would collapse it to one row for an
-    // instant — the very thing the seeded height exists to prevent.
+    // Height already seeded from the label; measuring would undo it.
     if (freshMount && el.style.height) return;
 
     preservingScroll(el, () => {
@@ -1231,9 +1196,8 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
     });
   };
 
-  // `labelEl` is the element being replaced by the editor (the h3 for a task
-  // name). Its height is carried into state so the editor can mount at exactly
-  // that height — see the `style` prop on the name textareas for why.
+  // labelEl is the node the editor replaces; its height goes into state so the
+  // editor can mount at the same size. See the textarea's style prop.
   const startInlineEdit = (entry, field, labelEl) => {
     if (!entry || !field) return;
     // Disarm any leftover Esc skip-flag: browsers don't fire blur when the
@@ -2025,8 +1989,7 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
                                   }}
                                   onFocus={(e) => e.target.select()}
                                   aria-label="Edit task name"
-                                  // Mount at the height of the h3 being replaced. See the
-                                  // matching comment on the completed-entry editor below.
+                                  // Mount at the h3's height; see the editor below.
                                   style={inlineEdit.labelHeight ? { height: `${inlineEdit.labelHeight}px` } : undefined}
                                   ref={(el) => {
                                     autoGrowInlineEditor(el);
@@ -2097,7 +2060,9 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
                       initial={animations.scale.initial}
                       animate={animations.scale.animate}
                       exit={animations.scale.exit}
-                      transition={getTransition({ duration: 0.4, ease: "easeOut" })}
+                      /* 0.3 to match the entry cards; a slower break lags
+                         behind them on relayout and overlaps its neighbours. */
+                      transition={getTransition({ duration: 0.3, ease: "easeOut" })}
                       className="text-center py-2"
                     >
                       <div
@@ -2141,18 +2106,11 @@ const DailyTracker = ({ timezone, timezoneInitialized = false, onTimezoneChange,
                                 }}
                                 onFocus={(e) => e.target.select()}
                                 aria-label="Edit task name"
-                                // Mount at exactly the height of the h3 this replaces.
-                                // rows={1} would otherwise make the card one row tall for
-                                // the instant before the ref callback sizes it, and that
-                                // shortens the list: at the bottom of a day the browser
-                                // clamps the scroll offset to the briefly-smaller
-                                // maximum, and growing back does not undo the clamp. The
-                                // result was the last entry lurching upward by a line per
-                                // wrapped line the moment you clicked it.
+                                // Mount at the h3's height. Without this rows={1} makes the
+                                // card one row tall until the ref sizes it, which shortens
+                                // the list and clamps the scroll at the bottom of a day.
                                 style={inlineEdit.labelHeight ? { height: `${inlineEdit.labelHeight}px` } : undefined}
-                                // Re-runs on every render (the inline arrow makes a
-                                // fresh callback). Both helpers self-guard so only a
-                                // real change to the value does any work.
+                                // Re-runs every render; both helpers guard themselves.
                                 ref={(el) => {
                                   autoGrowInlineEditor(el);
                                   focusInlineEditor(el);
